@@ -1,83 +1,166 @@
 <?php
 /**
- * moses.nkem@scandiweb.com
- * Data patch for product creation
+ * @category    Sacndiweb
+ * @package     Scandiweb_ScandiwebTest
+ * @author      Egboh Moses <moses.nkem@scandiweb.com>
+ * @copyright   Copyright (c) 2021 Scandiweb, Ltd (https://scandiweb.com)
  */
 
 namespace Scandiweb\ScandiwebTest\Setup\Patch\Data;
 
-use Magento\Framework\Setup\ModuleDataSetupInterface;
+use Magento\Catalog\Api\CategoryLinkManagementInterface;
+use Magento\Catalog\Api\Data\ProductInterfaceFactory;
+use Magento\Catalog\Api\ProductRepositoryInterface;
+use Magento\Catalog\Model\Product;
+use Magento\Catalog\Model\Product\Attribute\Source\Status;
+use Magento\Catalog\Model\Product\Type;
+use Magento\Catalog\Model\Product\Visibility;
+use Magento\Eav\Setup\EavSetup;
+use Magento\Framework\App\State;
+use Magento\Framework\Exception\CouldNotSaveException;
+use Magento\Framework\Exception\InputException;
+use Magento\Framework\Exception\LocalizedException;
+use Magento\Framework\Exception\NoSuchEntityException;
 use Magento\Framework\Setup\Patch\DataPatchInterface;
-use Magento\Framework\Setup\Patch\PatchRevertableInterface;
+use Magento\Framework\Validation\ValidationException;
+use Magento\InventoryApi\Api\Data\SourceItemInterface;
+use Magento\InventoryApi\Api\Data\SourceItemInterfaceFactory;
+use Magento\InventoryApi\Api\SourceItemsSaveInterface;
+use Magento\Store\Model\StoreManagerInterface;
 
-class CreateSimpleProductDataPatch
-    implements DataPatchInterface,
-    PatchRevertableInterface
+/**
+ * Create Migration product class
+ */
+class CreateSimpleProductDataPatch implements DataPatchInterface
 {
     /**
-     * @var ModuleDataSetupInterface
-     */
-    private $moduleDataSetup;
+   * @var ProductInterfaceFactory
+   */
+    protected ProductInterfaceFactory $productInterfaceFactory;
 
     /**
-     * @param ModuleDataSetupInterface $moduleDataSetup
+     * @var ProductRepositoryInterface
+     */
+    protected ProductRepositoryInterface $productRepository;
+
+     /**
+      * @var State
+      */
+    protected State $appState;
+
+    /**
+     * @var StoreManagerInterface
+     */
+    protected StoreManagerInterface $storeManager;
+
+    /**
+     * @var SourceItemInterfaceFactory
+     */
+    protected SourceItemInterfaceFactory $sourceItemFactory;
+
+    /**
+     * @var SourceItemsSaveInterface
+     */
+    protected SourceItemsSaveInterface $sourceItemsSaveInterface;
+
+    /**
+     * @var EavSetup
+     */
+    protected EavSetup $eavSetup;
+
+    /**
+     * @var array
+     */
+    protected array $sourceItems = [];
+
+    /**
+     * Migration patch constructor.
+     *
+     * @param ProductInterfaceFactory $productInterfaceFactory
+     * @param ProductRepositoryInterface $productRepository
+     * @param SourceItemInterfaceFactory $sourceItemFactory
+     * @param SourceItemsSaveInterface $sourceItemsSaveInterface
+     * @param State $appState
+     * @param StoreManagerInterface $storeManager
+     * @param EavSetup $eavSetup
+     * @param CategoryLinkManagementInterface $categoryLink
      */
     public function __construct(
-        ModuleDataSetupInterface $moduleDataSetup
+        ProductInterfaceFactory $productInterfaceFactory,
+        ProductRepositoryInterface $productRepository,
+        State $appState,
+        StoreManagerInterface $storeManager,
+        EavSetup $eavSetup,
+        SourceItemInterfaceFactory $sourceItemFactory,
+        SourceItemsSaveInterface $sourceItemsSaveInterface,
+        CategoryLinkManagementInterface $categoryLink
     ) {
-        $this->moduleDataSetup = $moduleDataSetup;
+        $this->appState = $appState;
+        $this->productInterfaceFactory = $productInterfaceFactory;
+        $this->productRepository = $productRepository;
+        $this->eavSetup = $eavSetup;
+        $this->storeManager = $storeManager;
+        $this->sourceItemFactory = $sourceItemFactory;
+        $this->sourceItemsSaveInterface = $sourceItemsSaveInterface;
+        $this->categoryLink = $categoryLink;
     }
 
     /**
-     * @inheritdoc
+     * Add new product
      */
-    public function apply()
+    public function apply(): void
     {
-        $objectManager = \Magento\Framework\App\ObjectManager::getInstance();
+        $this->appState->emulateAreaCode('adminhtml', [$this, 'execute']);
+    }
 
-        $state = $objectManager->get('Magento\Framework\App\State');
-        $state->setAreaCode('frontend');
+    public function execute(): void
+    {
+        $product = $this->productInterfaceFactory->create();
 
-        $product = $objectManager->create('\Magento\Catalog\Model\Product');
-        $product->setSku('my-sku');
-        $product->setName('Sample Simple Product');
-        $product->setAttributeSetId(4);
-        $product->setStatus(1);
-        $product->setWeight(10);
-        $product->setVisibility(4);
-        $product->setTaxClassId(0);
-        $product->setTypeId('simple');
-        $product->setPrice(100);
-        $product->setStockData(
-            array(
-                'use_config_manage_stock' => 0,
-                'manage_stock' => 1,
-                'is_in_stock' => 1,
-                'qty' => 999999999
-            )
-        );
-        $product->save();
+        if ($product->getIdBySku('grip-trainer')) {
+            return;
+        }
+
+        $attributeSetId = $this->eavSetup->getAttributeSetId(Product::ENTITY, 'Default');
+        $websiteIDs = [$this->storeManager->getStore()->getWebsiteId()];
+        $product->setTypeId(Type::TYPE_SIMPLE)
+            ->setWebsiteIds($websiteIDs)
+            ->setAttributeSetId($attributeSetId)
+            ->setName('Grip Trainer')
+            ->setUrlKey('griptrainer')
+            ->setSku('grip-trainer')
+            ->setPrice(9.99)
+            ->setVisibility(Visibility::VISIBILITY_BOTH)
+            ->setStatus(Status::STATUS_ENABLED)
+            ->setStockData(['use_config_manage_stock' => 1, 'is_qty_decimal' => 0, 'is_in_stock' => 1]);
+        $product = $this->productRepository->save($product);
+
+        $sourceItem = $this->sourceItemFactory->create();
+        $sourceItem->setSourceCode('default');
+        $sourceItem->setQuantity(10);
+        $sourceItem->setSku($product->getSku());
+        $sourceItem->setStatus(SourceItemInterface::STATUS_IN_STOCK);
+        $this->sourceItems[] = $sourceItem;
+
+        $this->sourceItemsSaveInterface->execute($this->sourceItems);
+
+        $this->categoryLink->assignProductToCategories($product->getSku(), [2]);
     }
 
     /**
-     * @inheritdoc
+     * {@inheritDoc}
      */
-    public static function getDependencies()
+    public static function getDependencies(): array
     {
         return [];
     }
 
-    public function revert()
-    {
-        $this->moduleDataSetup->getConnection()->startSetup();
-        $this->moduleDataSetup->getConnection()->endSetup();
-    }
-
     /**
-     * @inheritdoc
+     * {@inheritDoc}
      */
-    public function getAliases()
+    public function getAliases(): array
     {
         return [];
     }
+
 }
